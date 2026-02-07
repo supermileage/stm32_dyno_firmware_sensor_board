@@ -16,10 +16,10 @@ jobs:
         uses: xanderhendriks/action-build-stm32cubeide@v16.0
         with:
           project-path: '.'
-          project-target: 'stm32_dyno_firmware_v2/Debug'
+          project-target: 'stm32_dyno_firmware_sensor_board/Debug'
 
       - name: Build Release
         uses: xanderhendriks/action-build-stm32cubeide@v16.0
         with:
           project-path: '.'
-          project-target: 'stm32_dyno_firmware_v2/Release'
+          project-target: 'stm32_dyno_firmware_sensor_board/Release'
