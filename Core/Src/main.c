@@ -27,6 +27,8 @@
 
 #include "Messages/messages_public.h"
 #include "Messages/messages_private.h"
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,6 +39,9 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define NUM_APERTURES 64
+
+#define PRINT_DATA_USING_SPRINTF 1
+#define BYPASS_HANDSHAKES 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -141,7 +146,9 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
+  #if BYPASS_HANDSHAKES == 0
   HAL_UART_Receive_IT(&huart1, (uint8_t*)&usart_received_command_header, sizeof(mother_board_to_child_board_usart_command_header_t));
+  #endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -149,9 +156,12 @@ int main(void)
 
   while (1)
   {
-	  if (usart_message_received)
+    bool skip = false;
+    #if BYPASS_HANDSHAKES == 0
+    if (usart_message_received)
     {
       __disable_irq();
+
       switch (usart_received_command_header.task_id)
       {
         case CHILD_BOARD_TASK_ID_OPTICAL_SENSOR:
@@ -161,6 +171,7 @@ int main(void)
             OpticalSensor_Init();
           }
           break;
+
         case CHILD_BOARD_TASK_ID_FORCE_SENSOR_ADC:
           ForceSensorADC_Enable(usart_received_command_header.enable);
           if (usart_received_command_header.enable)
@@ -168,6 +179,7 @@ int main(void)
             ForceSensorADC_Init();
           }
           break;
+
         case CHILD_BOARD_TASK_ID_FORCE_SENSOR_ADS1115:
           ForceSensorADS1115_Enable(usart_received_command_header.enable);
           if (usart_received_command_header.enable)
@@ -175,50 +187,66 @@ int main(void)
             ForceSensorADS1115_Init(&force_sensor_ads1115_settings);
           }
           break;
+
         default:
           ChildBoardPopulateTaskErrorDataStruct(&usart_output_data.error_data, CHILD_BOARD_TASK_INVALID_TASK_ID, (uint32_t)ERROR_USB_RX_INVALID_TASK_ID);
-          usart_message_received = false;
-          if (HAL_UART_Receive_IT(&huart1, (uint8_t*)&usart_received_command_header, sizeof(mother_board_to_child_board_usart_command_header_t)) != HAL_OK)
-          {
-            ChildBoardPopulateTaskErrorDataStruct(&usart_output_data.error_data, CHILD_BOARD_TASK_INVALID_TASK_ID, (uint32_t)ERROR_USB_RX_CB_START_FAILURE);
-          }
-          __enable_irq();
-          goto skip_due_to_error;
+          skip = true;
+          break;
       }
+
       usart_message_received = false;
       if (HAL_UART_Receive_IT(&huart1, (uint8_t*)&usart_received_command_header, sizeof(mother_board_to_child_board_usart_command_header_t)) != HAL_OK)
       {
         ChildBoardPopulateTaskErrorDataStruct(&usart_output_data.error_data, CHILD_BOARD_TASK_INVALID_TASK_ID, (uint32_t)ERROR_USB_RX_CB_START_FAILURE);
       }
+
       __enable_irq();
-
     }
-    child_board_function_status_t optical_status = OpticalSensor_Run();
-    if (optical_status == CHILD_BOARD_FUNCTION_ERROR || optical_status == CHILD_BOARD_FUNCTION_WARNING)
-    {
-      OpticalSensor_Enable(false);
-      goto skip_due_to_error;
-    }
+    #endif
 
-    child_board_function_status_t force_sensor_adc_status = ForceSensorADC_Run();
-    if (force_sensor_adc_status == CHILD_BOARD_FUNCTION_ERROR || force_sensor_adc_status == CHILD_BOARD_FUNCTION_WARNING)
+    if (!skip)
     {
-      ForceSensorADC_Enable(false);
-      goto skip_due_to_error;
+      child_board_function_status_t status = OpticalSensor_Run();
+      if (status == CHILD_BOARD_FUNCTION_ERROR || status == CHILD_BOARD_FUNCTION_WARNING)
+      {
+        OpticalSensor_Enable(false);
+        skip = true;
+      }
+    }
+    #if BYPASS_HANDSHAKES == 0
+    if (!skip)
+    {
+      child_board_function_status_t status = ForceSensorADC_Run();
+      if (status == CHILD_BOARD_FUNCTION_ERROR || status == CHILD_BOARD_FUNCTION_WARNING)
+      {
+        ForceSensorADC_Enable(false);
+        skip = true;
+      }
+    }
+    #endif 
+    
+    if (!skip)
+    {
+      child_board_function_status_t status = ForceSensorADS1115_Run();
+      if (status == CHILD_BOARD_FUNCTION_ERROR || status == CHILD_BOARD_FUNCTION_WARNING)
+      {
+        ForceSensorADS1115_Enable(false);
+      }
     }
     
-    child_board_function_status_t force_sensor_ads1115_status = ForceSensorADS1115_Run();
-    if (force_sensor_ads1115_status == CHILD_BOARD_FUNCTION_ERROR || force_sensor_ads1115_status == CHILD_BOARD_FUNCTION_WARNING)
-    {
-      ForceSensorADS1115_Enable(false);
-      goto skip_due_to_error;
-    }
-
-    skip_due_to_error:
+    
+    #if PRINT_DATA_USING_SPRINTF == 0
     HAL_UART_Transmit(&huart1, (uint8_t*)&usart_output_data, sizeof(usart_output_data), HAL_MAX_DELAY);
-    
-
-
+    #else 
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "%lu %lu %lu %lu %lu", 
+             usart_output_data.sensor_data.optical_count_posedges,
+             usart_output_data.sensor_data.optical_timer_counter_value,
+             usart_output_data.sensor_data.force_sensor_raw_value,
+             usart_output_data.error_data.task_id,
+             usart_output_data.error_data.error_id);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+    #endif
 
     /* USER CODE END WHILE */
 
@@ -530,6 +558,7 @@ static void MX_USART1_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
@@ -537,6 +566,22 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(USART_ALERT_GPIO_Port, USART_ALERT_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : USART_ALERT_Pin */
+  GPIO_InitStruct.Pin = USART_ALERT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(USART_ALERT_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ADS1115_ALERT_Pin */
+  GPIO_InitStruct.Pin = ADS1115_ALERT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(ADS1115_ALERT_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
