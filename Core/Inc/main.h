@@ -57,6 +57,18 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define OP_SIG_Pin GPIO_PIN_0
+#define OP_SIG_GPIO_Port GPIOA
+#define FORCE_IN_Pin GPIO_PIN_7
+#define FORCE_IN_GPIO_Port GPIOA
+#define USART_ALERT_Pin GPIO_PIN_12
+#define USART_ALERT_GPIO_Port GPIOB
+#define ADS1115_SCL_Pin GPIO_PIN_6
+#define ADS1115_SCL_GPIO_Port GPIOB
+#define ADS1115_SDA_Pin GPIO_PIN_7
+#define ADS1115_SDA_GPIO_Port GPIOB
+#define ADS1115_ALERT_Pin GPIO_PIN_8
+#define ADS1115_ALERT_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
