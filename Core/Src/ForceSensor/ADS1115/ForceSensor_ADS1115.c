@@ -102,7 +102,7 @@ child_board_function_status_t ForceSensorADS1115_Run(void)
         return CHILD_BOARD_FUNCTION_DISABLED;
     }
 
-    ads1115_alert_status = false;
+	ads1115_alert_status = false;
 
     // --- Trigger conversion ---
     if (!ADS1115_TriggerConversion()) 
@@ -112,10 +112,7 @@ child_board_function_status_t ForceSensorADS1115_Run(void)
     }
 
     // --- Wait for alert GPIO to indicate conversion complete ---
-    if (!ads1115_alert_status)
-    {
-        return CHILD_BOARD_FUNCTION_WAITING_FOR_DATA;
-    }
+    while (!ads1115_alert_status);
 
     // --- Read conversion and populate output ---
     int16_t rawVal;

@@ -47,6 +47,10 @@ MAX_FORCE_LBF              = 100.0   # Maximum force in lbf — adjust to match 
 LBF_TO_NEWTONS             = 4.44822 # 1 lbf = 4.44822 N
 NUM_APERTURES              = 64      # Must match #define NUM_APERTURES in firmware
 
+TIMER_PRESCALER = 16-1
+CLOCK_SPEED = 64_000_000
+TIMER_COUNTER_INCREMENT_RATE = CLOCK_SPEED / (TIMER_PRESCALER + 1)
+
 
 def calculate_force_newtons(raw_value: int) -> float:
     """
@@ -68,7 +72,7 @@ def calculate_angular_velocity(num_posedges: int, timer_counter_value: int) -> f
     if timer_counter_value == 0:
         return 0.0
     revolutions = num_posedges / NUM_APERTURES
-    elapsed_s   = timer_counter_value / 1_000_000.0
+    elapsed_s   = timer_counter_value / TIMER_COUNTER_INCREMENT_RATE
     return (revolutions / elapsed_s) * 2.0 * math.pi
 
 
@@ -154,11 +158,12 @@ def parse_packet(raw: str):
     if len(parts) != 5:
         raise ValueError(f"Expected 5 fields, got {len(parts)}: {raw!r}")
 
-    optical_count    = int(parts[0])
-    optical_timer    = int(parts[1])
-    force_raw        = int(parts[2])
-    task_id          = int(parts[3])
-    error_id         = int(parts[4])
+    # Adjusted parsing order to match firmware output
+    optical_count    = int(parts[0])  # 1: optical_count_posedges
+    optical_timer    = int(parts[1])  # 2: optical_timer_counter_value
+    force_raw        = int(parts[2])  # 3: force_sensor_raw_value
+    task_id          = int(parts[3])  # 4: task_id
+    error_id         = int(parts[4])  # 5: error_id
 
     return {
         "optical_count_posedges":      optical_count,
@@ -181,7 +186,7 @@ def setup_logger(log_dir: str) -> logging.Logger:
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s",
-                                      datefmt="%H:%M:%S.%f"))
+                                      datefmt="%H:%M:%S"))  # Removed %f
     logger.addHandler(fh)
 
     print(f"Logging to: {log_path}")
@@ -201,16 +206,21 @@ def format_packet_lines(data: dict, timestamp: str) -> list[str]:
 
     lines = [
         f"[{timestamp}]",
-        f"  Force                 : {force_n:.4f} N",
-        f"  Angular velocity      : {omega:.4f} rad/s",
-        f"  RPM                   : {rpm:.2f}",
+        f"  optical_count_posedges      : {data['optical_count_posedges']}",
+        f"  optical_timer_counter_value : {data['optical_timer_counter_value']}",
+        f"  force_sensor_raw_value      : {data['force_sensor_raw_value']}",
+        f"  task_id                     : {data['task_id']}",
+        f"  error_id                    : {data['error_id']}",
+        f"  Force                       : {force_n:.4f} N",
+        f"  Angular velocity            : {omega:.4f} rad/s",
+        f"  RPM                         : {rpm:.2f}",
     ]
     if has_err:
         task_name  = resolve_task(task_id)
         error_name = resolve_error(task_id, error_id)
         lines.append(f"  *** ERROR  task={task_name}  error={error_name} ***")
     else:
-        lines.append(f"  Status                : OK")
+        lines.append(f"  Status                      : OK")
     return lines
 
 
@@ -243,19 +253,22 @@ def print_and_log_packet(data: dict, timestamp: str, logger: logging.Logger) -> 
 # buffer and split on runs of whitespace, collecting tokens five at a time.
 
 def stream_packets(port: serial.Serial):
-    """Generator that yields raw 5-token strings from the serial stream."""
+    """Generator that yields raw 5-token strings from the serial stream.
+
+    Uses newline boundaries (firmware sends \\r\\n) so packets are never
+    misaligned even if the stream starts mid-packet.
+    """
     leftover = ""
     while True:
         chunk = port.read(64).decode("ascii", errors="replace")
         if not chunk:
             continue
         leftover += chunk
-        tokens = leftover.split()
-        while len(tokens) >= 5:
-            yield " ".join(tokens[:5])
-            tokens = tokens[5:]
-        # Keep any partial token for the next iteration
-        leftover = tokens[0] if tokens else ""
+        while "\n" in leftover:
+            line, leftover = leftover.split("\n", 1)
+            line = line.strip()
+            if line:
+                yield line
 
 
 # ---------------------------------------------------------------------------
