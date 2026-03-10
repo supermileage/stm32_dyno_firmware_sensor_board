@@ -43,7 +43,7 @@ from datetime import datetime
 
 ADS1115_MV_PER_COUNT       = 0.1875   # ADS1115_GetMvPerCount(ADS1115_PGA_6P144)
 ADS1115_FORCESENSOR_VOLTAGE = 5.0     # Supply voltage to force sensor (V) — adjust if different
-MAX_FORCE_LBF              = 100.0   # Maximum force in lbf — adjust to match sensor spec
+MAX_FORCE_LBF              = 25.0   # Maximum force in lbf — adjust to match sensor spec
 LBF_TO_NEWTONS             = 4.44822 # 1 lbf = 4.44822 N
 NUM_APERTURES              = 64      # Must match #define NUM_APERTURES in firmware
 
