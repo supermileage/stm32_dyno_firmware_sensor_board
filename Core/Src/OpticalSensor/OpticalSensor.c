@@ -67,12 +67,22 @@ child_board_function_status_t OpticalSensor_Enable(bool enable)
     return CHILD_BOARD_FUNCTION_SUCCESS;
 }
 
+static uint32_t count = 0;
+
 child_board_function_status_t OpticalSensor_Run(void)
 {
     if (!optical_encoder_enabled)
     {
         return CHILD_BOARD_FUNCTION_DISABLED;
     }
+
+    if (count < 20)
+    {
+        count++;
+        return CHILD_BOARD_FUNCTION_WAITING_FOR_DATA;
+    }
+
+    count = 0;
 
     __disable_irq();
     usart_output_data.sensor_data.optical_count_posedges = __HAL_TIM_GET_COUNTER(optical_posedges_counter_timer);

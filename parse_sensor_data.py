@@ -42,14 +42,15 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 
 ADS1115_MV_PER_COUNT       = 0.1875   # ADS1115_GetMvPerCount(ADS1115_PGA_6P144)
-ADS1115_FORCESENSOR_VOLTAGE = 5.0     # Supply voltage to force sensor (V) — adjust if different
+ADS1115_FORCESENSOR_VOLTAGE = 5.2     # Supply voltage to force sensor (V) — adjust if different
 MAX_FORCE_LBF              = 25.0   # Maximum force in lbf — adjust to match sensor spec
 LBF_TO_NEWTONS             = 4.44822 # 1 lbf = 4.44822 N
-NUM_APERTURES              = 64      # Must match #define NUM_APERTURES in firmware
+NUM_APERTURES              = 55      # Must match #define NUM_APERTURES in firmware
 
 TIMER_PRESCALER = 16-1
 CLOCK_SPEED = 64_000_000
 TIMER_COUNTER_INCREMENT_RATE = CLOCK_SPEED / (TIMER_PRESCALER + 1)
+FORCE_ZERO_SAMPLE_COUNT = 100
 
 
 def calculate_force_newtons(raw_value: int) -> float:
@@ -61,6 +62,34 @@ def calculate_force_newtons(raw_value: int) -> float:
             / ADS1115_FORCESENSOR_VOLTAGE
             * MAX_FORCE_LBF
             * LBF_TO_NEWTONS)
+
+
+class ForceZeroCalibrator:
+    def __init__(self, sample_count: int):
+        self.sample_count = sample_count
+        self.samples_collected = 0
+        self.raw_sum = 0
+        self.zero_offset_raw = None
+
+    def add_sample(self, raw_value: int) -> None:
+        if self.zero_offset_raw is not None:
+            return
+
+        self.raw_sum += raw_value
+        self.samples_collected += 1
+        if self.samples_collected >= self.sample_count:
+            self.zero_offset_raw = self.raw_sum / self.samples_collected
+
+    def is_ready(self) -> bool:
+        return self.zero_offset_raw is not None
+
+    def progress_text(self) -> str:
+        return f"CAL {self.samples_collected}/{self.sample_count}"
+
+    def calculate_zeroed_force_newtons(self, raw_value: int) -> float:
+        if self.zero_offset_raw is None:
+            return calculate_force_newtons(raw_value)
+        return calculate_force_newtons(raw_value - self.zero_offset_raw)
 
 
 def calculate_angular_velocity(num_posedges: int, timer_counter_value: int) -> float:
@@ -193,47 +222,87 @@ def setup_logger(log_dir: str) -> logging.Logger:
     return logger
 
 
-def format_packet_lines(data: dict, timestamp: str) -> list[str]:
-    task_id   = data["task_id"]
-    error_id  = data["error_id"]
-    has_err   = is_error(task_id, error_id)
+# Console table layout
+_COL = "{:>12}  {:>10}  {:>10}  {:>12}  {}"
+_HEADER  = _COL.format("Time", "Force", "RPM", "ω (rad/s)", "Status")
+_DIVIDER = "-" * len(_HEADER)
+_header_printed = False
 
-    force_n   = calculate_force_newtons(data["force_sensor_raw_value"])
-    omega     = calculate_angular_velocity(data["optical_count_posedges"],
-                                          data["optical_timer_counter_value"])
-    rpm       = calculate_rpm(data["optical_count_posedges"],
-                              data["optical_timer_counter_value"])
 
-    lines = [
+def _print_header() -> None:
+    global _header_printed
+    if not _header_printed:
+        print(_HEADER)
+        print(_DIVIDER)
+        _header_printed = True
+
+
+def format_log_record(data: dict, timestamp: str, force_zero: ForceZeroCalibrator) -> str:
+    """Detailed record written to the log file."""
+    task_id  = data["task_id"]
+    error_id = data["error_id"]
+    has_err  = is_error(task_id, error_id)
+
+    force_n = force_zero.calculate_zeroed_force_newtons(data["force_sensor_raw_value"])
+    omega   = calculate_angular_velocity(data["optical_count_posedges"],
+                                         data["optical_timer_counter_value"])
+    rpm     = calculate_rpm(data["optical_count_posedges"],
+                            data["optical_timer_counter_value"])
+
+    parts = [
         f"[{timestamp}]",
-        f"  optical_count_posedges      : {data['optical_count_posedges']}",
-        f"  optical_timer_counter_value : {data['optical_timer_counter_value']}",
-        f"  force_sensor_raw_value      : {data['force_sensor_raw_value']}",
-        f"  task_id                     : {data['task_id']}",
-        f"  error_id                    : {data['error_id']}",
-        f"  Force                       : {force_n:.4f} N",
-        f"  Angular velocity            : {omega:.4f} rad/s",
-        f"  RPM                         : {rpm:.2f}",
+        f"optical_count={data['optical_count_posedges']}",
+        f"optical_timer={data['optical_timer_counter_value']}",
+        f"force_raw={data['force_sensor_raw_value']}",
+        f"task_id={task_id}",
+        f"error_id={error_id}",
+        f"force_zeroed={force_n:.4f}N",
+        f"omega={omega:.4f}rad/s",
+        f"rpm={rpm:.2f}",
     ]
-    if has_err:
-        task_name  = resolve_task(task_id)
-        error_name = resolve_error(task_id, error_id)
-        lines.append(f"  *** ERROR  task={task_name}  error={error_name} ***")
+    if force_zero.is_ready():
+        parts.append(f"force_zero_offset_raw={force_zero.zero_offset_raw:.3f}")
     else:
-        lines.append(f"  Status                      : OK")
-    return lines
+        parts.append(f"force_zero_status={force_zero.progress_text()}")
+    if has_err:
+        parts.append(f"ERROR task={resolve_task(task_id)} error={resolve_error(task_id, error_id)}")
+    else:
+        parts.append("status=OK")
+    return "  ".join(parts)
 
 
-def print_and_log_packet(data: dict, timestamp: str, logger: logging.Logger) -> None:
-    lines = format_packet_lines(data, timestamp)
-    has_err = is_error(data["task_id"], data["error_id"])
+def print_and_log_packet(
+    data: dict,
+    timestamp: str,
+    logger: logging.Logger,
+    force_zero: ForceZeroCalibrator,
+) -> None:
+    task_id  = data["task_id"]
+    error_id = data["error_id"]
+    has_err  = is_error(task_id, error_id)
 
-    for line in lines:
-        print(line)
-    print()
+    force_n = force_zero.calculate_zeroed_force_newtons(data["force_sensor_raw_value"])
+    omega   = calculate_angular_velocity(data["optical_count_posedges"],
+                                         data["optical_timer_counter_value"])
+    rpm     = calculate_rpm(data["optical_count_posedges"],
+                            data["optical_timer_counter_value"])
 
-    # Build a single log record per packet
-    log_msg = "  |  ".join(lines)
+    if has_err:
+        status = f"ERROR: {resolve_task(task_id)} / {resolve_error(task_id, error_id)}"
+    else:
+        status = "OK"
+
+    _print_header()
+    if force_zero.is_ready():
+        force_text = f"{force_n:.3f} N"
+    else:
+        force_text = force_zero.progress_text()
+
+    print(_COL.format(timestamp, force_text, f"{rpm:.1f}", f"{omega:.4f}", status))
+    if has_err:
+        print(f"  {'!' * 60}")
+
+    log_msg = format_log_record(data, timestamp, force_zero)
     if has_err:
         logger.error(log_msg)
     else:
@@ -303,6 +372,7 @@ def main():
 
     print(f"Opening {args.port} at {args.baud} baud …")
     logger = setup_logger(args.log_dir)
+    force_zero = ForceZeroCalibrator(FORCE_ZERO_SAMPLE_COUNT)
 
     try:
         with serial.Serial(args.port, args.baud, timeout=1) as port:
@@ -317,13 +387,14 @@ def main():
                     continue
 
                 ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                force_zero.add_sample(data["force_sensor_raw_value"])
 
                 if args.errors_only and not is_error(data["task_id"], data["error_id"]):
                     # Still log everything to file even when console is filtered
-                    logger.info("  |  ".join(format_packet_lines(data, ts)))
+                    logger.info(format_log_record(data, ts, force_zero))
                     continue
 
-                print_and_log_packet(data, ts, logger)
+                print_and_log_packet(data, ts, logger, force_zero)
 
     except serial.SerialException as exc:
         print(f"Serial error: {exc}", file=sys.stderr)

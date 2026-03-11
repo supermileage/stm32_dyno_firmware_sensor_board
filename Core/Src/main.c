@@ -38,8 +38,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define NUM_APERTURES 64
-
 #define PRINT_DATA_USING_SPRINTF 1
 #define BYPASS_HANDSHAKES 1
 /* USER CODE END PD */
