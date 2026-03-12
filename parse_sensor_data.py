@@ -30,6 +30,7 @@ Output columns (console & log):
 """
 
 import argparse
+from collections import deque
 import logging
 import math
 import os
@@ -51,6 +52,7 @@ TIMER_PRESCALER = 16-1
 CLOCK_SPEED = 64_000_000
 TIMER_COUNTER_INCREMENT_RATE = CLOCK_SPEED / (TIMER_PRESCALER + 1)
 FORCE_ZERO_SAMPLE_COUNT = 100
+FORCE_AVG_WINDOW_DEFAULT = 20
 
 
 def calculate_force_newtons(raw_value: int) -> float:
@@ -90,6 +92,27 @@ class ForceZeroCalibrator:
         if self.zero_offset_raw is None:
             return calculate_force_newtons(raw_value)
         return calculate_force_newtons(raw_value - self.zero_offset_raw)
+
+
+class RollingAverage:
+    def __init__(self, window_size: int):
+        self.window_size = max(1, window_size)
+        self.values = deque()
+        self.running_sum = 0.0
+
+    def add(self, value: float) -> float:
+        self.values.append(value)
+        self.running_sum += value
+
+        if len(self.values) > self.window_size:
+            self.running_sum -= self.values.popleft()
+
+        return self.current_average()
+
+    def current_average(self) -> float:
+        if not self.values:
+            return 0.0
+        return self.running_sum / len(self.values)
 
 
 def calculate_angular_velocity(num_posedges: int, timer_counter_value: int) -> float:
@@ -237,7 +260,12 @@ def _print_header() -> None:
         _header_printed = True
 
 
-def format_log_record(data: dict, timestamp: str, force_zero: ForceZeroCalibrator) -> str:
+def format_log_record(
+    data: dict,
+    timestamp: str,
+    force_zero: ForceZeroCalibrator,
+    force_avg_n: float,
+) -> str:
     """Detailed record written to the log file."""
     task_id  = data["task_id"]
     error_id = data["error_id"]
@@ -257,6 +285,7 @@ def format_log_record(data: dict, timestamp: str, force_zero: ForceZeroCalibrato
         f"task_id={task_id}",
         f"error_id={error_id}",
         f"force_zeroed={force_n:.4f}N",
+        f"force_avg={force_avg_n:.4f}N",
         f"omega={omega:.4f}rad/s",
         f"rpm={rpm:.2f}",
     ]
@@ -276,6 +305,7 @@ def print_and_log_packet(
     timestamp: str,
     logger: logging.Logger,
     force_zero: ForceZeroCalibrator,
+    force_avg_n: float,
 ) -> None:
     task_id  = data["task_id"]
     error_id = data["error_id"]
@@ -294,7 +324,7 @@ def print_and_log_packet(
 
     _print_header()
     if force_zero.is_ready():
-        force_text = f"{force_n:.3f} N"
+        force_text = f"{force_avg_n:.3f} N"
     else:
         force_text = force_zero.progress_text()
 
@@ -302,7 +332,7 @@ def print_and_log_packet(
     if has_err:
         print(f"  {'!' * 60}")
 
-    log_msg = format_log_record(data, timestamp, force_zero)
+    log_msg = format_log_record(data, timestamp, force_zero, force_avg_n)
     if has_err:
         logger.error(log_msg)
     else:
@@ -368,11 +398,21 @@ def main():
         default="logs",
         help="Directory to write log files into (default: logs/)",
     )
+    parser.add_argument(
+        "--force-avg-window", "-w",
+        type=int,
+        default=FORCE_AVG_WINDOW_DEFAULT,
+        help=(
+            "Rolling average window for displayed/logged force values "
+            f"(default: {FORCE_AVG_WINDOW_DEFAULT})"
+        ),
+    )
     args = parser.parse_args()
 
     print(f"Opening {args.port} at {args.baud} baud …")
     logger = setup_logger(args.log_dir)
     force_zero = ForceZeroCalibrator(FORCE_ZERO_SAMPLE_COUNT)
+    force_avg = RollingAverage(args.force_avg_window)
 
     try:
         with serial.Serial(args.port, args.baud, timeout=1) as port:
@@ -388,13 +428,17 @@ def main():
 
                 ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
                 force_zero.add_sample(data["force_sensor_raw_value"])
+                current_force_n = force_zero.calculate_zeroed_force_newtons(
+                    data["force_sensor_raw_value"]
+                )
+                force_avg_n = force_avg.add(current_force_n)
 
                 if args.errors_only and not is_error(data["task_id"], data["error_id"]):
                     # Still log everything to file even when console is filtered
-                    logger.info(format_log_record(data, ts, force_zero))
+                    logger.info(format_log_record(data, ts, force_zero, force_avg_n))
                     continue
 
-                print_and_log_packet(data, ts, logger, force_zero)
+                print_and_log_packet(data, ts, logger, force_zero, force_avg_n)
 
     except serial.SerialException as exc:
         print(f"Serial error: {exc}", file=sys.stderr)
