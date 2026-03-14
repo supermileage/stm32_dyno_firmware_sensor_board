@@ -14,6 +14,8 @@ child_board_function_status_t ForceSensorADS1115_Init(child_board_force_sensor_a
 child_board_function_status_t ForceSensorADS1115_Enable(bool enable);
 child_board_function_status_t ForceSensorADS1115_Run(void);
 
+void forcesensor_ads1115_gpio_alert_interrupt();
+
 #ifdef __cplusplus
 }
 #endif

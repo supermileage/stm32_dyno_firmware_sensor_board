@@ -38,8 +38,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define NUM_APERTURES 64
-
 #define PRINT_DATA_USING_SPRINTF 1
 #define BYPASS_HANDSHAKES 1
 /* USER CODE END PD */
@@ -56,6 +54,7 @@ I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart1;
 
@@ -71,6 +70,7 @@ static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -79,6 +79,8 @@ static void MX_TIM1_Init(void);
 /* USER CODE BEGIN 0 */
 TIM_HandleTypeDef* optical_timer = &htim1;
 TIM_HandleTypeDef* optical_posedges_counter_timer = &htim2;
+
+TIM_HandleTypeDef* optical_timer_test_pwm_timer = &htim3;
 
 TIM_TypeDef* optical_timer_instance = TIM1;
 TIM_TypeDef* optical_posedges_counter_timer_instance = TIM2;
@@ -145,10 +147,18 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   MX_TIM1_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
   #if BYPASS_HANDSHAKES == 0
   HAL_UART_Receive_IT(&huart1, (uint8_t*)&usart_received_command_header, sizeof(mother_board_to_child_board_usart_command_header_t));
-  #endif
+  #else
+  OpticalSensor_Init();
+  OpticalSensor_Enable(true);
+  ForceSensorADS1115_Init(&force_sensor_ads1115_settings);
+  ForceSensorADS1115_Enable(true);
+  #endif 
+
+  HAL_TIM_PWM_Start(optical_timer_test_pwm_timer, TIM_CHANNEL_1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -206,7 +216,7 @@ int main(void)
 
     if (!skip)
     {
-      child_board_function_status_t status = OpticalSensor_Run();
+    	child_board_function_status_t status = OpticalSensor_Run();
       if (status == CHILD_BOARD_FUNCTION_ERROR || status == CHILD_BOARD_FUNCTION_WARNING)
       {
         OpticalSensor_Enable(false);
@@ -227,7 +237,7 @@ int main(void)
     
     if (!skip)
     {
-      child_board_function_status_t status = ForceSensorADS1115_Run();
+	  child_board_function_status_t status = ForceSensorADS1115_Run();
       if (status == CHILD_BOARD_FUNCTION_ERROR || status == CHILD_BOARD_FUNCTION_WARNING)
       {
         ForceSensorADS1115_Enable(false);
@@ -237,9 +247,9 @@ int main(void)
     
     #if PRINT_DATA_USING_SPRINTF == 0
     HAL_UART_Transmit(&huart1, (uint8_t*)&usart_output_data, sizeof(usart_output_data), HAL_MAX_DELAY);
-    #else 
+    #else
     char buffer[256];
-    snprintf(buffer, sizeof(buffer), "%lu %lu %lu %lu %lu", 
+    snprintf(buffer, sizeof(buffer), "%lu %lu %lu %lu %lu\r\n",
              usart_output_data.sensor_data.optical_count_posedges,
              usart_output_data.sensor_data.optical_timer_counter_value,
              usart_output_data.sensor_data.force_sensor_raw_value,
@@ -427,7 +437,7 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 64-1;
+  htim1.Init.Prescaler = 16-1;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim1.Init.Period = 65535;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -500,6 +510,55 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 16-1;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 400-1;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 200-1;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+  HAL_TIM_MspPostInit(&htim3);
 
 }
 
@@ -583,12 +642,24 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(ADS1115_ALERT_GPIO_Port, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI4_15_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI4_15_IRQn);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin)
+{
+	if (GPIO_Pin == ADS1115_ALERT_Pin)
+	{
+		forcesensor_ads1115_gpio_alert_interrupt();
+	}
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == optical_timer_instance)
